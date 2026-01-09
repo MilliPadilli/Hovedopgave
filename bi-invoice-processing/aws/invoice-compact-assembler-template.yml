@@ -1,0 +1,105 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Invoice Compact assembler Lambda (per-environment)
+
+Parameters:
+  Environment:
+    Type: String
+    Description: Deployment environment (tst / prd)
+    AllowedValues:
+      - tst
+      - prd
+    Default: tst
+
+  CodeBucket:
+    Type: String
+    Description: "S3 bucket where the Lambda zip is stored"
+
+  CodeKey:
+    Type: String
+    Description: "S3 key for the Lambda zip"
+
+  InvoiceProcessingBucket:
+    Type: String
+    Description: Name of the existing S3 bucket for invoice processing
+    Default: tst-invoice-input
+
+Resources:
+# Execution role for the lambda 6
+  InvoiceCompactAssemblerRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${Environment}-InvoiceCompactAssemblerRole"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: !Sub "${Environment}-invoice-compact-assembler-policy"
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+            - Effect: Allow
+              Action:
+                - s3:ListBucket
+              Resource: 
+                - !Sub 'arn:aws:s3:::${InvoiceProcessingBucket}' 
+            - Effect: Allow
+              Action:
+                - s3:GetObject
+              Resource:
+                - !Sub 'arn:aws:s3:::${InvoiceProcessingBucket}/pipeline/manifests/*'
+                - !Sub 'arn:aws:s3:::${InvoiceProcessingBucket}/pipeline/compact-chunks/*'
+            - Effect: Allow
+              Action:
+                - s3:PutObject
+              Resource:
+                - !Sub 'arn:aws:s3:::${InvoiceProcessingBucket}/pipeline/compact/*'
+                - !Sub 'arn:aws:s3:::${InvoiceProcessingBucket}/pipeline/manifests/*'
+
+
+  # Lambda #6: Assembles all chunks back to one
+  InvoiceCompactAssemblerFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: invoice-compact-assembler
+      Handler: lambda_function.lambda_handler
+      Role: !GetAtt InvoiceCompactAssemblerRole.Arn
+      Code:
+        S3Bucket: !Ref CodeBucket
+        S3Key: !Ref CodeKey
+      Runtime: python3.10
+      Timeout: 300
+      MemorySize: 512
+      Environment:
+        Variables:
+          ENV: !Ref Environment
+          RESULTS_BUCKET:   !Ref InvoiceProcessingBucket
+          MANIFESTS_BUCKET: !Ref InvoiceProcessingBucket
+          CHUNKS_PREFIX:    'pipeline/compact-chunks/'
+          MANIFESTS_PREFIX: 'pipeline/manifests/'
+          COMPACT_PREFIX:   'pipeline/compact/'
+      Tags:
+        - Key: Project
+          Value: "BI Invoice Processing"
+        - Key: Owner
+          Value: "Business Intelligence"
+        - Key: Environment
+          Value: !Ref Environment
+
+
+Outputs:
+  InvoiceCompactAssemblerFunctionName:
+    Description: "InvoiceCompactAssemblerFunction name"
+    Value: !Ref InvoiceCompactAssemblerFunction
+
+  InvoiceCompactAssemblerFunctionArn:
+    Description: "InvoiceCompactAssemblerFunction ARN"
+    Value: !GetAtt InvoiceCompactAssemblerFunction.Arn
+
+
+

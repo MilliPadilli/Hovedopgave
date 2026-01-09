@@ -1,0 +1,121 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Invoice Textract - Start Analysis Lambda (per-environment)
+
+Parameters:
+  Environment:
+    Type: String
+    Description: Deployment environment (tst / prd)
+    AllowedValues:
+      - tst
+      - prd
+    Default: tst
+
+  CodeBucket:
+    Type: String
+    Description: "S3 bucket where the Lambda zip is stored"
+
+  CodeKey:
+    Type: String
+    Description: "S3 key for the Lambda zip"
+
+  InvoiceProcessingBucket:
+    Type: String
+    Description: Name of the existing S3 bucket for invoice processing
+    Default: tst-invoice-input
+
+Resources:
+# Execution role for the lambda 3
+  TextractRawToLeanRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${Environment}-TextractRawToLeanRole"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: !Sub "${Environment}-invoice-textract-raw-to-lean-policy"
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+            - Effect: Allow
+              Action:
+                - s3:GetObject
+              Resource: 
+                - !Sub 'arn:aws:s3:::${InvoiceProcessingBucket}/pipeline/textract/raw/*'
+            - Effect: Allow
+              Action:
+                - s3:PutObject
+              Resource: 
+                - !Sub 'arn:aws:s3:::${InvoiceProcessingBucket}/pipeline/lean/*'
+
+
+  # Lambda #3: Convert RAW Textract JSON into LEAN JSON
+  InvoiceTextractRawToLeanFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: invoice-textract-raw-to-lean
+      Handler: lambda_function.lambda_handler
+      Role: !GetAtt TextractRawToLeanRole.Arn
+      Code:
+        S3Bucket: !Ref CodeBucket
+        S3Key: !Ref CodeKey
+      Runtime: python3.10
+      Environment:
+        Variables:
+          ENV: !Ref Environment
+          ANALYSES_BUCKET:  !Ref InvoiceProcessingBucket
+          PROCESSED_BUCKET: !Ref InvoiceProcessingBucket
+          RAW_PREFIX:       'pipeline/textract/raw/'
+          LEAN_PREFIX:      'pipeline/lean/'
+          INCLUDE_LINES_TEXT: 'true'
+      Tags:
+        - Key: Project
+          Value: "BI Invoice Processing"
+        - Key: Owner
+          Value: "Business Intelligence"
+        - Key: Environment
+          Value: !Ref Environment
+
+  InvoiceTextractRawCreated:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref InvoiceTextractRawToLeanFunction
+      Action: lambda:InvokeFunction
+      Principal: s3.amazonaws.com
+      SourceArn: 
+        - !Sub 'arn:aws:s3:::${InvoiceProcessingBucket}
+
+  InvoiceTextractRawEventRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: InvoiceTextractRawEventRule
+      EventPattern:
+        source:
+          - "aws.s3"
+        detail-type:
+          - "Object Created"
+        detail:
+          bucket:
+            name:
+              - "tst-invoice-input"
+          object:
+            key:
+              prefix: "pipeline/textract/raw/"
+      Targets:
+        - Arn: !GetAtt InvoiceTextractRawToLeanFunction.Arn
+          Id: "InvoiceTextractRawLambdaTarget"
+
+Outputs:
+  InvoiceTextractRawToLeanFunctionName:
+    Description: "InvoiceTextractRawToLeanFunction name"
+    Value: !Ref InvoiceTextractRawToLeanFunction
+
+  InvoiceTextractRawToLeanFunctionArn:
+    Description: "InvoiceTextractRawToLeanFunction ARN"
+    Value: !GetAtt InvoiceTextractRawToLeanFunction.Arn

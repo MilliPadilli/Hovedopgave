@@ -1,0 +1,132 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Invoice Textract - lean to compact chunker Lambda (per-environment)
+
+Parameters:
+  Environment:
+    Type: String
+    Description: Deployment environment (tst / prd)
+    AllowedValues:
+      - tst
+      - prd
+    Default: tst
+
+  CodeBucket:
+    Type: String
+    Description: "S3 bucket where the Lambda zip is stored"
+
+  CodeKey:
+    Type: String
+    Description: "S3 key for the Lambda zip"
+
+  InvoiceProcessingBucket:
+    Type: String
+    Description: Name of the existing S3 bucket for invoice processing
+    Default: tst-invoice-input
+
+  LayerS3Key:
+    Type: String
+    Description: "S3 key for the Compact Layer zip"
+
+
+Resources:
+  # execution role for lambda 5
+  InvoiceLeanToCompactChunkerRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${Environment}-InvoiceLeanToCompactChunkerRole"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: !Sub "${Environment}-invoice-lean-to-compact-chunker-policy"
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                Resource:
+                  - !Sub 'arn:aws:s3:::${InvoiceProcessingBucket}/pipeline/lean/*'
+                  - !Sub 'arn:aws:s3:::${InvoiceProcessingBucket}/pipeline/manifests/*'
+              - Effect: Allow
+                Action:
+                  - s3:PutObject
+                Resource:
+                  - !Sub 'arn:aws:s3:::${InvoiceProcessingBucket}/pipeline/compact-chunks/*'
+                  - !Sub 'arn:aws:s3:::${InvoiceProcessingBucket}/pipeline/quarantine/*' #rename quarantine, chunks-with-errors
+              - Effect: Allow
+                Action:
+                  - sqs:ReceiveMessage
+                  - sqs:DeleteMessage
+                  - sqs:GetQueueAttributes
+                Resource:
+                  Fn::ImportValue: !Sub '${Environment}-InvoiceCompactChunkRequestsQueueArn'
+              - Effect: Allow
+                Action:
+                  - bedrock:InvokeModel
+                  - bedrock:InvokeModelWithResponseStream
+                Resource: '*'
+
+
+  # Compact layer used by the lambda that need to be imported as a layer
+  CompactLayer:
+    Type: AWS::Lambda::LayerVersion
+    Properties:
+      LayerName: !Sub "${Environment}-CompactLayer"
+      Description: "Compact Layer"
+      Content:
+        S3Bucket: !Ref CodeBucket
+        S3Key: !Ref LayerS3Key
+      CompatibleRuntimes:
+        - python3.9
+        - python3.10
+      LicenseInfo: "MIT"
+
+
+  # Lambda #5: 
+  InvoiceLeanToCompactChunkerFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub "${Environment}-invoice-lean-to-compact-chunker"
+      Handler: lambda_function.lambda_handler
+      Role: !GetAtt InvoiceLeanToCompactChunkerRole.Arn
+      Code:
+        S3Bucket: !Ref CodeBucket
+        S3Key: !Ref CodeKey
+      Runtime: python3.10
+      Timeout: 900
+      MemorySize: 1024
+      Layers:
+        - !Ref CompactLayer
+      Environment:
+        Variables:
+          ENV: !Ref Environment
+          MODEL_REGION: !Ref AWS::Region
+          MODEL_ID: 'anthropic.claude-3-5-sonnet-20241022-v2:0'   # adjust according to model
+          DEST_BUCKET:     !Ref InvoiceProcessingBucket
+          MANIFEST_BUCKET: !Ref InvoiceProcessingBucket
+          CURRENCY_DEFAULT: 'EUR'
+          MAX_TOKENS: '4000'
+          STRICT_SCHEMA: 'true'
+      Tags:
+        - Key: Project
+          Value: "BI Invoice Processing"
+        - Key: Owner
+          Value: "Business Intelligence"
+        - Key: Environment
+          Value: !Ref Environment
+
+Outputs:
+  InvoiceLeanToCompactChunkerFunctionName:
+    Description: "InvoiceLeanToCompactChunkerFunction name"
+    Value: !Ref InvoiceLeanToCompactChunkerFunction
+
+  InvoiceLeanToCompactChunkerFunctionArn:
+    Description: "InvoiceLeanToCompactChunkerFunction ARN"
+    Value: !GetAtt InvoiceLeanToCompactChunkerFunction.Arn

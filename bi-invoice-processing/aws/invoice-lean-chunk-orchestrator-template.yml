@@ -1,0 +1,106 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Invoice Lean to chunk orchestrator Lambda (per-environment)
+
+Parameters:
+  Environment:
+    Type: String
+    Description: Deployment environment (tst / prd)
+    AllowedValues:
+      - tst
+      - prd
+    Default: tst
+
+  CodeBucket:
+    Type: String
+    Description: "S3 bucket where the Lambda zip is stored"
+
+  CodeKey:
+    Type: String
+    Description: "S3 key for the Lambda zip"
+
+  InvoiceProcessingBucket:
+    Type: String
+    Description: "Name of the existing S3 bucket for invoice processing"
+    Default: tst-invoice-input
+
+Resources:
+  # SQS queue: chunk requests for Bedrock compacting
+  InvoiceCompactChunkRequestsQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub "${Environment}-invoice-compact-chunk-request"
+
+  # Execution role for the lambda 4
+  InvoiceLeanChunkOrchestratorRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${Environment}-InvoiceLeanChunkOrchestratorRole"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: !Sub "${Environment}-invoice-lean-chunk-orchestrator-policy"
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+            - Effect: Allow
+              Action:
+                - s3:GetObject
+              Resource: 
+                - !Sub 'arn:aws:s3:::${InvoiceProcessingBucket}/pipeline/lean/*'
+            - Effect: Allow
+              Action:
+                - s3:PutObject
+              Resource: 
+                - !Sub 'arn:aws:s3:::${InvoiceProcessingBucket}/pipeline/manifests/*'
+            - Effect: Allow
+              Action:
+                - sqs:SendMessage
+              Resource: !GetAtt InvoiceCompactChunkRequestsQueue.Arn
+
+
+  # Lambda #4: Lean JSON chunking ochestrator
+  InvoiceLeanChunkOrchestratorFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub "${Environment}-invoice-lean-chunk-orchestrator"
+      Handler: lambda_function.lambda_handler
+      Role: !GetAtt InvoiceLeanChunkOrchestratorRole.Arn
+      Code:
+        S3Bucket: !Ref CodeBucket
+        S3Key: !Ref CodeKey
+      Runtime: python3.10
+      Environment:
+        Variables:
+          ENV: !Ref Environment
+          QUEUE_URL:           !Ref InvoiceCompactChunkRequestsQueue
+          TOKEN_BUDGET:        '8000'   
+          OVERLAP_LINES:       '8'
+          MAX_PAGES_PER_CHUNK: '3'
+      Tags:
+        - Key: Project
+          Value: "BI Invoice Processing"
+        - Key: Owner
+          Value: "Business Intelligence"
+        - Key: Environment
+          Value: !Ref Environment
+
+Outputs:
+  InvoiceLeanChunkOrchestratorFunctionName:
+    Description: "InvoiceLeanChunkOrchestratorFunction name"
+    Value: !Ref InvoiceLeanChunkOrchestratorFunction
+
+  InvoiceLeanChunkOrchestratorFunctionArn:
+    Description: "InvoiceLeanChunkOrchestratorFunction ARN"
+    Value: !GetAtt InvoiceLeanChunkOrchestratorFunction.Arn
+
+  InvoiceCompactChunkRequestsQueueArn:
+    Value: !GetAtt InvoiceCompactChunkRequestsQueue.Arn
+    Export:
+      Name: !Sub "${Environment}-InvoiceCompactChunkRequestsQueueArn"

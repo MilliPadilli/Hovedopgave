@@ -1,0 +1,348 @@
+definitions:
+  steps:
+    - step: &static-analysis
+        name: Static analysis CloudFormation
+        image: python:3.7
+        caches:
+          - pip
+        script:
+          - pip3 install cfn-lint
+          - cfn-lint --info aws/*.yml
+
+    - step: &deploy-invoice-textract-start-analysis-tst
+        name: Deploy TST Textract start analysis Lambda
+        trigger: manual
+        image: public.ecr.aws/lambda/python:3.10
+        caches:
+          - pip
+        script:
+          - yum install -y zip awscli
+          - python3 -m pip install --upgrade pip
+          # Generate unique keys
+          - export ENV_NAME=${ENV_NAME:-tst}
+          - export FULL_S3_BUCKET=tst-data-warehouse
+          - export CODE_KEY="lambda/invoice_processing/invoice-textract-start-analysis/invoice-textract-start-analysis-${BITBUCKET_BUILD_NUMBER}.zip"
+          # Delete all files in the target folder
+          - echo "Cleaning up old Lambda code and layer zips in s3://tst-data-warehouse/lambda/invoice_processing/invoice-textract-start-analysis"
+          - aws s3 rm s3://tst-data-warehouse/lambda/invoice_processing/invoice-textract-start-analysis --recursive
+          # Zip Lambda function code
+          - echo "Zipping Lambda function code..." 
+          - cd lambdas/invoice-textract-start-analysis
+          - zip -r invoice-textract-start-analysis.zip lambda_function.py
+          - aws s3 cp invoice-textract-start-analysis.zip s3://${FULL_S3_BUCKET}/${CODE_KEY}
+          # Deploy CloudFormation
+          - echo "Packaging CloudFormation template..."
+          - cd ../..
+          - |
+            aws cloudformation package \
+              --template-file aws/invoice-textract-start-analysis-template.yml \
+              --s3-bucket ${FULL_S3_BUCKET} \
+              --output-template-file output.yml
+          - echo "Deploying CloudFormation stack..."
+          - |
+            aws cloudformation deploy \
+              --template-file output.yml \
+              --stack-name tst-invoice-textract-start-analysis \
+              --capabilities CAPABILITY_NAMED_IAM \
+              --parameter-overrides \
+                Environment=tst \
+                CodeBucket=${FULL_S3_BUCKET} \
+                CodeKey=${CODE_KEY} 
+
+
+    - step: &deploy-invoice-textract-store-result-tst
+        name: Deploy TST Textract store result Lambda
+        trigger: manual
+        image: public.ecr.aws/lambda/python:3.10
+        caches:
+          - pip
+        script:
+          - yum install -y zip awscli
+          - python3 -m pip install --upgrade pip
+          # Generate unique keys
+          - export ENV_NAME=${ENV_NAME:-tst}
+          - export FULL_S3_BUCKET=tst-data-warehouse
+          - export CODE_KEY="lambda/invoice_processing/invoice-textract-store-result/invoice-textract-store-result-${BITBUCKET_BUILD_NUMBER}.zip"
+          - export EXISTING_BUCKET=tst-invoice-input
+          # Delete all files in the target folder
+          - echo "Cleaning up old Lambda code and layer zips in s3://tst-data-warehouse/lambda/invoice_processing"
+          - aws s3 rm s3://tst-data-warehouse/lambda/invoice_processing/invoice-textract-store-result --recursive
+
+          # Zip Lambda function code
+          - echo "Zipping Lambda function code..." 
+          - cd lambdas/invoice-textract-store-result
+          - zip -r invoice-textract-store-result.zip lambda_function.py
+          - aws s3 cp invoice-textract-store-result.zip s3://${FULL_S3_BUCKET}/${CODE_KEY}
+          # Deploy CloudFormation
+          - echo "Packaging CloudFormation template..."
+          - cd ../..
+          - |
+            aws cloudformation package \
+              --template-file aws/invoice-textract-store-result-template.yml \
+              --s3-bucket ${FULL_S3_BUCKET} \
+              --output-template-file output.yml
+          - echo "Deploying CloudFormation stack..."
+          - |
+            aws cloudformation deploy \
+              --template-file output.yml \
+              --stack-name tst-invoice-textract-store-result \
+              --capabilities CAPABILITY_NAMED_IAM \
+              --parameter-overrides \
+                Environment=tst \
+                CodeBucket=${FULL_S3_BUCKET} \
+                InvoiceProcessingBucket=${EXISTING_BUCKET} \
+                CodeKey=${CODE_KEY} 
+
+
+    - step: &deploy-invoice-textract-raw-to-lean-tst
+        name: Deploy TST converts raw JSON to lean JSON
+        trigger: manual
+        image: public.ecr.aws/lambda/python:3.10
+        caches:
+          - pip
+        script:
+          - yum install -y zip awscli
+          - python3 -m pip install --upgrade pip
+          # Generate unique keys
+          - export ENV_NAME=${ENV_NAME:-tst}
+          - export FULL_S3_BUCKET=tst-data-warehouse
+          - export CODE_KEY="lambda/invoice_processing/invoice-textract-raw-to-lean/invoice-textract-raw-to-lean-${BITBUCKET_BUILD_NUMBER}.zip"
+          - export EXISTING_BUCKET=tst-invoice-input
+          # Delete all files in the target folder
+          - echo "Cleaning up old Lambda code and layer zips in s3://tst-data-warehouse/lambda/invoice_processing"
+          - aws s3 rm s3://tst-data-warehouse/lambda/invoice_processing/invoice-textract-raw-to-lean --recursive
+
+          # Zip Lambda function code
+          - echo "Zipping Lambda function code..." 
+          - cd lambdas/invoice-textract-raw-to-lean
+          - zip -r invoice-textract-raw-to-lean.zip lambda_function.py
+          - aws s3 cp invoice-textract-raw-to-lean.zip s3://${FULL_S3_BUCKET}/${CODE_KEY}
+          # Deploy CloudFormation
+          - echo "Packaging CloudFormation template..."
+          - cd ../..
+          - |
+            aws cloudformation package \
+              --template-file aws/invoice-textract-raw-to-lean-template.yml \
+              --s3-bucket ${FULL_S3_BUCKET} \
+              --output-template-file output.yml
+          - echo "Deploying CloudFormation stack..."
+          - |
+            aws cloudformation deploy \
+              --template-file output.yml \
+              --stack-name tst-invoice-textract-raw-to-lean \
+              --capabilities CAPABILITY_NAMED_IAM \
+              --parameter-overrides \
+                Environment=tst \
+                CodeBucket=${FULL_S3_BUCKET} \
+                InvoiceProcessingBucket=${EXISTING_BUCKET} \
+                CodeKey=${CODE_KEY} 
+  
+
+    - step: &deploy-invoice-lean-chunk-orchestrator-tst
+        name: Deploy TST orchestrates lean JSON into chunks
+        trigger: manual
+        image: public.ecr.aws/lambda/python:3.10
+        caches:
+          - pip
+        script:
+          - yum install -y zip awscli
+          - python3 -m pip install --upgrade pip
+          # Generate unique keys
+          - export ENV_NAME=${ENV_NAME:-tst}
+          - export FULL_S3_BUCKET=tst-data-warehouse
+          - export CODE_KEY="lambda/invoice_processing/invoice-lean-chunk-orchestrator/invoice-lean-chunk-orchestrator-${BITBUCKET_BUILD_NUMBER}.zip"
+          - export EXISTING_BUCKET=tst-invoice-input
+          # Delete all files in the target folder
+          - echo "Cleaning up old Lambda code and layer zips in s3://tst-data-warehouse/lambda/invoice_processing"
+          - aws s3 rm s3://tst-data-warehouse/lambda/invoice_processing/invoice-lean-chunk-orchestrator --recursive
+
+          # Zip Lambda function code
+          - echo "Zipping Lambda function code..." 
+          - cd lambdas/invoice-lean-chunk-orchestrator
+          - zip -r invoice-lean-chunk-orchestrator.zip lambda_function.py
+          - aws s3 cp invoice-lean-chunk-orchestrator.zip s3://${FULL_S3_BUCKET}/${CODE_KEY}
+          # Deploy CloudFormation
+          - echo "Packaging CloudFormation template..."
+          - cd ../..
+          - |
+            aws cloudformation package \
+              --template-file aws/invoice-lean-chunk-orchestrator-template.yml \
+              --s3-bucket ${FULL_S3_BUCKET} \
+              --output-template-file output.yml
+          - echo "Deploying CloudFormation stack..."
+          - |
+            aws cloudformation deploy \
+              --template-file output.yml \
+              --stack-name tst-invoice-lean-chunk-orchestrator \
+              --capabilities CAPABILITY_NAMED_IAM \
+              --parameter-overrides \
+                Environment=tst \
+                CodeBucket=${FULL_S3_BUCKET} \
+                InvoiceProcessingBucket=${EXISTING_BUCKET} \
+                CodeKey=${CODE_KEY} 
+
+
+    - step: &deploy-invoice-lean-to-compact-chunker-tst
+        name: Deploy TST Lean to compact chunker Lambda
+        trigger: manual
+        image: public.ecr.aws/lambda/python:3.10
+        caches:
+          - pip
+        script:
+          - yum install -y zip awscli
+          - python3 -m pip install --upgrade pip
+          # Generate unique keys
+          - export ENV_NAME=${ENV_NAME:-tst}
+          - export FULL_S3_BUCKET=tst-data-warehouse
+          - export CODE_KEY="lambda/invoice_processing/invoice-lean-to-compact-chunker/invoice-lean-to-compact-chunker-${BITBUCKET_BUILD_NUMBER}.zip"
+          - export EXISTING_BUCKET=tst-invoice-input
+          - export LAYER_KEY="lambda/invoice_processing/invoice-lean-to-compact-chunker/layers/compact_core_layer-${BITBUCKET_BUILD_NUMBER}.zip"
+          # Delete all files in the target folder
+          - echo "Cleaning up old Lambda code and layer zips in s3://tst-data-warehouse/lambda/invoice_processing"
+          - aws s3 rm s3://tst-data-warehouse/lambda/invoice_processing/invoice-lean-to-compact-chunker --recursive
+          # Build Lambda layer
+          - echo "Building Compact core Lambda layer..."
+          - cd lambdas/invoice-lean-to-compact-chunker
+          - rm -rf python compact_core_layer.zip
+          - pip3 install -r requirements.txt -t python/
+          - ls -1 python | head -10
+          - zip -r ../compact_core_layer.zip python
+          - unzip -l compact_core_layer.zip | head -20
+          - aws s3 cp ../compact_core_layer.zip s3://${FULL_S3_BUCKET}/${LAYER_KEY}
+          # Zip Lambda function code
+          - echo "Zipping Lambda function code..." 
+          - zip -r invoice-lean-to-compact-chunker.zip lambda_function.py
+          - aws s3 cp invoice-lean-to-compact-chunker.zip s3://${FULL_S3_BUCKET}/${CODE_KEY}
+          # Deploy CloudFormation
+          - echo "Packaging CloudFormation template..."
+          - cd ../..
+          - |
+            aws cloudformation package \
+              --template-file aws/invoice-lean-to-compact-chunker-template.yml \
+              --s3-bucket ${FULL_S3_BUCKET} \
+              --output-template-file output.yml
+          - echo "Deploying CloudFormation stack..."
+          - |
+            aws cloudformation deploy \
+              --template-file output.yml \
+              --stack-name tst-invoice-lean-to-compact-chunker \
+              --capabilities CAPABILITY_NAMED_IAM \
+              --parameter-overrides \
+                Environment=tst \
+                CodeBucket=${FULL_S3_BUCKET} \
+                InvoiceProcessingBucket=${EXISTING_BUCKET} \
+                CodeKey=${CODE_KEY} \
+                LayerS3Key=${LAYER_KEY}
+
+
+    - step: &deploy-invoice-compact-assembler-tst
+        name: Deploy TST Compact assembler
+        trigger: manual
+        image: public.ecr.aws/lambda/python:3.10
+        caches:
+          - pip
+        script:
+          - yum install -y zip awscli
+          - python3 -m pip install --upgrade pip
+          # Generate unique keys
+          - export ENV_NAME=${ENV_NAME:-tst}
+          - export FULL_S3_BUCKET=tst-data-warehouse
+          - export CODE_KEY="lambda/invoice_processing/invoice-compact-assembler/invoice-compact-assembler-${BITBUCKET_BUILD_NUMBER}.zip"
+          - export EXISTING_BUCKET=tst-invoice-input
+          # Delete all files in the target folder
+          - echo "Cleaning up old Lambda code and layer zips in s3://tst-data-warehouse/lambda/invoice_processing"
+          - aws s3 rm s3://tst-data-warehouse/lambda/invoice_processing/invoice-compact-assembler --recursive
+
+          # Zip Lambda function code
+          - echo "Zipping Lambda function code..." 
+          - cd lambdas/invoice-compact-assembler
+          - zip -r invoice-compact-assembler.zip lambda_function.py
+          - aws s3 cp invoice-compact-assembler.zip s3://${FULL_S3_BUCKET}/${CODE_KEY}
+          # Deploy CloudFormation
+          - echo "Packaging CloudFormation template..."
+          - cd ../..
+          - |
+            aws cloudformation package \
+              --template-file aws/invoice-compact-assembler-template.yml \
+              --s3-bucket ${FULL_S3_BUCKET} \
+              --output-template-file output.yml
+          - echo "Deploying CloudFormation stack..."
+          - |
+            aws cloudformation deploy \
+              --template-file output.yml \
+              --stack-name tst-invoice-compact-assembler \
+              --capabilities CAPABILITY_NAMED_IAM \
+              --parameter-overrides \
+                Environment=tst \
+                CodeBucket=${FULL_S3_BUCKET} \
+                InvoiceProcessingBucket=${EXISTING_BUCKET} \
+                CodeKey=${CODE_KEY} 
+    
+    - step: &deploy-invoice-textract-start-analysis-prd
+        name: Deploy PRD Textract start analysis Lambda
+        trigger: manual
+        image: public.ecr.aws/lambda/python:3.10
+        caches:
+          - pip
+        script:
+          - yum install -y zip awscli
+          - python3 -m pip install --upgrade pip
+          # Generate unique keys
+          - export ENV_NAME=${ENV_NAME:-prd}
+          - export FULL_S3_BUCKET=prd-data-warehouse
+          - export CODE_KEY="lambda/invoice_processing/invoice-textract-start-analysis-${BITBUCKET_BUILD_NUMBER}.zip"
+          # Delete all files in the target folder
+          - echo "Cleaning up old Lambda code and layer zips in s3://prd-data-warehouse/lambda/invoice_processing"
+          - aws s3 rm s3://prd-data-warehouse/lambda/invoice_processing/ --recursive
+
+          # Zip Lambda function code
+          - echo "Zipping Lambda function code..." 
+          - cd lambdas/invoice-textract-start-analysis
+          - zip -r invoice-textract-start-analysis.zip lambda_function.py
+          - aws s3 cp invoice-textract-start-analysis.zip s3://${FULL_S3_BUCKET}/${CODE_KEY}
+          # Deploy CloudFormation
+          - echo "Packaging CloudFormation template..."
+          - cd ../..
+          - |
+            aws cloudformation package \
+              --template-file aws/template.yml \
+              --s3-bucket ${FULL_S3_BUCKET} \
+              --output-template-file output.yml
+          - echo "Deploying CloudFormation stack..."
+          - |
+            aws cloudformation deploy \
+              --template-file output.yml \
+              --stack-name prd-invoice-textract-start-analysis \
+              --capabilities CAPABILITY_NAMED_IAM \
+              --parameter-overrides \
+                Environment=prd \
+                CodeBucket=${FULL_S3_BUCKET} \
+                CodeKey=${CODE_KEY} 
+            
+
+
+pipelines:
+  default:
+    - step: *static-analysis
+    - step: *deploy-invoice-textract-start-analysis-tst
+    - step: *deploy-invoice-textract-store-result-tst
+    - step: *deploy-invoice-textract-raw-to-lean-tst
+    - step: *deploy-invoice-lean-chunk-orchestrator-tst
+    - step: *deploy-invoice-lean-to-compact-chunker-tst
+    - step: *deploy-invoice-compact-assembler-tst
+
+    - step: *deploy-invoice-textract-start-analysis-prd
+
+  branches:
+    main:
+      - step: *static-analysis
+      - step: *deploy-invoice-textract-raw-to-lean-tst
+      - step: *deploy-invoice-textract-start-analysis-tst
+      - step: *deploy-invoice-textract-store-result-tst
+      - step: *deploy-invoice-lean-chunk-orchestrator-tst
+      - step: *deploy-invoice-lean-to-compact-chunker-tst
+      - step: *deploy-invoice-compact-assembler-tst
+
+      - step: *deploy-invoice-textract-start-analysis-prd
+
+  

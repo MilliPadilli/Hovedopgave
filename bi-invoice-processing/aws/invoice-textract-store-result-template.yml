@@ -1,0 +1,134 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Invoice Textract - Start Analysis Lambda (per-environment)
+
+Parameters:
+  Environment:
+    Type: String
+    Description: Deployment environment (tst / prd)
+    AllowedValues:
+      - tst
+      - prd
+    Default: tst
+
+  CodeBucket:
+    Type: String
+    Description: "S3 bucket where the Lambda zip is stored"
+
+  CodeKey:
+    Type: String
+    Description: "S3 key for the Lambda zip"
+
+  InvoiceProcessingBucket:
+    Type: String
+    Description: "Name of the existing S3 bucket for invoice processing"
+    Default: tst-invoice-input
+
+Resources:
+  # SQS queue: receives Textract completion notifications
+  InvoiceTextractCompletedQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub '${Environment}-invoice-textract-completed-queue'
+
+  
+  # Allow SNS topic to send messages to the SQS queue
+  InvoiceTextractCompletedQueuePolicy:
+    Type: AWS::SQS::QueuePolicy
+    Properties:
+      Queues:
+        - !Ref InvoiceTextractCompletedQueue
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: sns.amazonaws.com
+            Action: sqs:SendMessage
+            Resource: !GetAtt InvoiceTextractCompletedQueue.Arn
+            Condition:
+              ArnEquals:
+                aws:SourceArn:
+                  Fn::ImportValue: !Sub "${Environment}-InvoiceTextractCompletedTopicArn"
+
+
+  # SNS subscription: connect Textract SNS topic to the SQS queue
+  InvoiceTextractCompletedSubscription:
+    Type: AWS::SNS::Subscription
+    Properties:
+      TopicArn:
+        Fn::ImportValue: !Sub "${Environment}-InvoiceTextractCompletedTopicArn"
+      Protocol: sqs
+      Endpoint: !GetAtt InvoiceTextractCompletedQueue.Arn
+
+
+ # Execution role for the Lambda 2
+  InvoiceTextractStoreResultRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${Environment}-InvoiceTextractStoreResultRole"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+      - PolicyName: !Sub "${Environment}-invoice-textract-store-result-policy"
+        PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+            - Effect: Allow
+              Action:
+                - textract:GetDocumentAnalysis
+                - textract:GetDocumentTextDetection
+              Resource: '*'
+            - Effect: Allow
+              Action:
+                - s3:PutObject
+              Resource:
+                - !Sub 'arn:aws:s3:::${InvoiceProcessingBucket}/pipeline/textract/raw/*' #if error, you can add line with one directry higher - /*
+                - !Sub 'arn:aws:s3:::${InvoiceProcessingBucket}/pipeline/textract/summary/*'
+            - Effect: Allow
+              Action:
+                - sqs:ReceiveMessage
+                - sqs:DeleteMessage
+                - sqs:GetQueueAttributes
+              Resource: !GetAtt InvoiceTextractCompletedQueue.Arn
+
+
+  # Lambda #2: Pulls Textract results and stores RAW + summary
+  InvoiceTextractStoreResultFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub "${Environment}-invoice-textract-store-result"
+      Handler: lambda_function.lambda_handler
+      Role: !GetAtt InvoiceTextractStoreResultRole.Arn
+      Code:
+        S3Bucket: !Ref CodeBucket
+        S3Key: !Ref CodeKey
+      Runtime: python3.10
+      Environment:
+        Variables:
+          ANALYSES_BUCKET: !Ref InvoiceProcessingBucket
+          RESULT_BUCKET:   !Ref InvoiceProcessingBucket
+          ANALYSIS_PREFIX: 'pipeline/textract/summary/analysis'
+          TEXT_PREFIX:     'pipeline/textract/summary/text'
+      Tags:
+        - Key: Project
+          Value: "BI Invoice Processing"
+        - Key: Owner
+          Value: "Business Intelligence"
+        - Key: Environment
+          Value: !Ref Environment
+
+Outputs:
+ InvoiceTextractStoreResultFunctionName:
+    Description: "InvoiceTextractStoreResultFunction name"
+    Value: !Ref InvoiceTextractStoreResultFunction
+
+  InvoiceTextractStoreResultFunctionArn:
+    Description: "InvoiceTextractStoreResultFunction ARN"
+    Value: !GetAtt InvoiceTextractStoreResultFunction.Arn
